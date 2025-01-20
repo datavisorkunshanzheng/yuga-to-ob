@@ -1,0 +1,42 @@
+{
+	"info": {
+		"_postman_id": "a82df0e4-f5fd-43e5-8611-d0193c2a69db",
+		"name": "Submit Spark",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "33277822"
+	},
+	"item": [
+		{
+			"name": "submit_job",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"args\": [\n        \"--spark_master\",\n        \"spark://spark-master:7077\",\n        \"--cassandra_host\",\n        \"aws-useast1-obtest-yb-d36647071f4975e5.elb.us-east-1.amazonaws.com\",\n        \"--cassandra_port\",\n        \"9042\",\n        \"--jar_packages\",\n        \"com.datastax.spark:spark-cassandra-connector_2.12:3.5.1\",\n        \"--sql_extensions\",\n        \"com.datastax.spark.connector.CassandraSparkExtensions\",\n        \"--output_path\",\n        \"s3a://datavisor-preprod-qatestpre-awsuseast1prod/data\",\n        \"--table_list\",\n        \"dv.velocity_galileo\"\n    ],\n    \"file\": \"s3a://datavisor-preprod-qatestpre-awsuseast1prod/export_db-1.0-SNAPSHOT.jar\",\n    \"className\": \"com.export.dataExport\",\n    \"driverMemory\": \"4G\",\n    \"driverCores\": 2,\n    \"executorMemory\": \"7G\",\n    \"executorCores\": 1,\n    \"conf\": {\n        \"spark.master\": \"spark://spark-master:7077\",\n        \"spark.submit.deployMode\": \"client\",\n        \"spark.default.parallelism\": \"20\",\n        \"spark.sql.shuffle.partitions\": \"20\",\n        \"spark.serializer\": \"org.apache.spark.serializer.KryoSerializer\"\n    }\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://spark-master.spark-pre-yq-36.svc.cluster.local:8998/batches",
+					"protocol": "http",
+					"host": [
+						"spark-master",
+						"spark-pre-yq-36",
+						"svc",
+						"cluster",
+						"local"
+					],
+					"port": "8998",
+					"path": [
+						"batches"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}

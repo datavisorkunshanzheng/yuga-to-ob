@@ -1,0 +1,18 @@
+{
+  "input_s3": "datavisor-preprod-qatestpre-awsuseast1prod",
+  "input_s3_prefix": "data",
+  "parallelization_level": 4,
+  "max_retry": 1,
+  "table_list": [
+    "dv.velocity_onefinance_test"
+  ],
+  "sql_host": "10.142.28.113",
+  "sql_port": "2881",
+  "rpc_port": "2882",
+  "sql_user": "root",
+  "sql_password": "Dv@12345@",
+  "sql_tenant": "ewsdv",
+  "script_path": "/home/yuqing/ob-loader-dumper-4.3.1-RELEASE/bin/obloader",
+  "s3_access_key": "",
+  "s3_secret_key": ""
+}
