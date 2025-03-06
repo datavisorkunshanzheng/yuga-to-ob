@@ -1,0 +1,27 @@
+{
+  "cluster_id": 54321,
+  "jar_path": "../export_yuga/target/export_db-1.0-SNAPSHOT.jar",
+  "cassandra_host": "aws-useast1-obtest-yb-d36647071f4975e5.elb.us-east-1.amazonaws.com",
+  "cassandra_port": "9042",
+  "output_path": "./output",
+  "table_list": "",
+  "jar_packages": "com.datastax.spark:spark-cassandra-connector_2.12:3.5.1",
+  "sql_extensions": "com.datastax.spark.connector.CassandraSparkExtensions",
+  "s3_bucket": "datavisor-preprod-qatestpre-awsuseast1prod",
+  "s3_jar_path": "s3a://datavisor-preprod-qatestpre-awsuseast1prod/export_db-1.0-SNAPSHOT.jar",
+  "infra_service_address": "https://dcluster-us-east-b-preprod.dv-api.com",
+  "destroy_cluster_after_job": true,
+  "spark_config": {
+    "driver_memory": "4g",
+    "executor_memory": "7g",
+    "driver_cores": 2,
+    "executor_cores": 1,
+    "additional_conf": {
+      "spark.executor.cores": "1",
+      "spark.dynamicAllocation.enabled": "false",
+      "spark.default.parallelism": "20",
+      "spark.sql.shuffle.partitions": "20",
+      "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
+    }
+  }
+}

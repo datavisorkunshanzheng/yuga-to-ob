@@ -29,7 +29,7 @@ headers = {
     'Content-Type': 'application/json',
 }
 
-cluster['tenant'] = 'yq'
+cluster['tenant'] = 'zks'
 cluster['type'] = 'spark'
 cluster['workers'] = 20
 cluster['masterCpu'] = 1

@@ -35,7 +35,7 @@ public class checkDupTest {
         SparkSession spark = SparkSession.builder().config(conf).getOrCreate();
 
 
-        Dataset<Row> df = spark.read().option("header", "true").csv("/Users/yuqing/Desktop/yuga-to-ob/export_db/src/main/resources/test.csv");
+        Dataset<Row> df = spark.read().option("header", "true").csv("export_yuga/src/main/resources/test.csv");
         Dataset<Row> groupedDf = df.groupBy("dim", "accu_id", "time").agg(functions.count("*").as("count"));
 
         Dataset<Row> dupDf = groupedDf.filter("count > 1");
