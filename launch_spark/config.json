@@ -1,5 +1,5 @@
 {
-  "cluster_id": 54321,
+  "cluster_id": 96,
   "jar_path": "../export_yuga/target/export_db-1.0-SNAPSHOT.jar",
   "cassandra_host": "aws-useast1-obtest-yb-d36647071f4975e5.elb.us-east-1.amazonaws.com",
   "cassandra_port": "9042",

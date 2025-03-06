@@ -64,8 +64,30 @@ def get_cluster_info(cluster_id, infra_service_address=None):
     service_address = infra_service_address or DEFAULT_INFRA_SERVICE_ADDRESS
     
     headers = {'Content-Type': 'application/json'}
-    response = requests.get(f"{service_address}/cluster/v2/info/{cluster_id}", 
+    response = requests.get(f"{service_address}/cluster/status/spark/cluster/{cluster_id}", 
                            headers=headers)
+    # Response example:
+    # {
+    #    "clusterIps": [
+    #        "http://spark-master.spark-pre-zks-96.svc.cluster.local:8998"
+    #    ],
+    #    "externalURl": "",
+    #    "launchNewNode": true,
+    #    "serviceAddress": "http://spark-master.spark-pre-zks-96.svc.cluster.local:8998",
+    #    "useOnDemandMaster": true,
+    #    "interrupted": false,
+    #    "type": "spark",
+    #    "workerMemory": "7",
+    #    "masterMemory": "4",
+    #    "name": "spark-pre-zks-96",
+    #    "namespace": "spark-pre-zks-96",
+    #    "workerCpu": "1",
+    #    "id": 96,
+    #    "workers": 20,
+    #    "tenant": "zks",
+    #    "masterCpu": "1",
+    #    "status": "STARTING"
+    # }
     
     if response.status_code != 200:
         print(f"Error getting cluster info: {response.status_code} - {response.text}")
@@ -95,12 +117,19 @@ def submit_spark_job(cluster_info, config):
     """Submit the Spark job to the cluster using the Livy REST API."""
     # Extract the master URL and construct the Livy endpoint
     master_host = cluster_info.get('externalURl')
-    if not master_host:
-        print("Error: 'externalURl' not found in cluster_info. Available keys:")
+    service_address = cluster_info.get('serviceAddress')
+    
+    # If externalURl is empty, use serviceAddress for the Livy endpoint
+    if not master_host and not service_address:
+        print("Error: Neither 'externalURl' nor 'serviceAddress' found in cluster_info. Available keys:")
         print(json.dumps(cluster_info, indent=2))
         sys.exit(1)
-        
-    livy_endpoint = f"http://{master_host}:8998/batches"
+    
+    # Use serviceAddress directly if available, otherwise construct from master_host
+    if service_address:
+        livy_endpoint = f"{service_address}/batches"
+    else:
+        livy_endpoint = f"http://{master_host}:8998/batches"
     
     # Get spark configuration from config or use defaults
     spark_config = config.get('spark_config', {})
@@ -113,7 +142,15 @@ def submit_spark_job(cluster_info, config):
     args = []
     
     # Add the required parameters
-    args.extend(["--spark_master", f"spark://{master_host}:7077"])
+    # Extract master host from serviceAddress if externalURl is not available
+    spark_master_host = master_host
+    if not spark_master_host and service_address:
+        # Extract hostname from service_address URL
+        from urllib.parse import urlparse
+        parsed_url = urlparse(service_address)
+        spark_master_host = parsed_url.netloc.split(':')[0]
+    
+    args.extend(["--spark_master", f"spark://{spark_master_host}:7077"])
     args.extend(["--cassandra_host", config['cassandra_host']])
     args.extend(["--cassandra_port", config['cassandra_port']])
     args.extend(["--output_path", config['output_path']])
@@ -130,7 +167,7 @@ def submit_spark_job(cluster_info, config):
     
     # Prepare the Spark configuration
     conf = {
-        "spark.master": f"spark://{master_host}:7077",
+        "spark.master": f"spark://{spark_master_host}:7077",
         "spark.submit.deployMode": "client",
         "spark.default.parallelism": "20",
         "spark.sql.shuffle.partitions": "20",
@@ -184,7 +221,7 @@ def submit_spark_job(cluster_info, config):
         print(f"Job details: {json.dumps(job_info, indent=2)}")
         
         # Monitor the job status
-        monitor_job(master_host, job_id)
+        monitor_job(livy_endpoint, job_id)
         
         return job_id
     except requests.exceptions.RequestException as e:
@@ -193,17 +230,24 @@ def submit_spark_job(cluster_info, config):
             print(f"Response: {e.response.text}")
         sys.exit(1)
 
-def monitor_job(master_host, job_id):
+def monitor_job(livy_endpoint, job_id):
     """Monitor the status of a submitted Spark job."""
-    if not master_host:
-        print("Error: master_host is empty or None")
+    if not livy_endpoint:
+        print("Error: livy_endpoint is empty or None")
         return False
         
     if not job_id:
         print("Error: job_id is empty or None")
         return False
         
-    status_endpoint = f"http://{master_host}:8998/batches/{job_id}"
+    # Construct the status endpoint by removing '/batches' if it's at the end and adding /{job_id}
+    if livy_endpoint.endswith('/batches'):
+        base_endpoint = livy_endpoint
+    else:
+        # If we don't have '/batches' at the end, we need to add it
+        base_endpoint = f"{livy_endpoint}/batches" if not '/batches' in livy_endpoint else livy_endpoint
+        
+    status_endpoint = f"{base_endpoint}/{job_id}"
     
     print(f"Monitoring job {job_id}...")
     
