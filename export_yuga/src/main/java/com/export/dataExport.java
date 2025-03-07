@@ -21,6 +21,7 @@ import java.util.Map;
 
 import static org.apache.spark.sql.functions.hex;
 import static org.apache.spark.sql.functions.to_json;
+import static org.apache.spark.sql.functions.col;
 
 /*************************************************************************
  *
@@ -69,6 +70,15 @@ public class dataExport {
         if (!params.containsKey("output_path")) {
             logger.warn("Missing output_path parameter, will use current directory");
             params.put("output_path", System.getProperty("user.dir"));
+        }
+        if (!params.containsKey("format")) {
+            logger.warn("Missing format parameter, will use ORC format");
+            params.put("format", "orc");
+        } else {
+            String format = params.get("format").toLowerCase();
+            if (!format.equals("orc") && !format.equals("csv")) {
+                throw new Exception("Invalid format parameter. Supported formats: orc, csv");
+            }
         }
     }
 
@@ -132,19 +142,69 @@ public class dataExport {
                 .option("keyspace", keyspace)
                 .load();
 
+
+        // Special handling for velocity tables
+        if (table.startsWith("velocity_")) {
+            if (table.startsWith("velocity_agg_result")) {
+                data = data.select(
+                    col("dim_value"),
+                    col("accu_id"),
+                    col("time"),
+                    col("value")
+                );
+            } else {
+                // Convert map to string for non-agg_result velocity tables only when CSV format
+                if (params.get("format").toLowerCase().equals("csv")) {
+                    data = data.select(
+                        col("dim"),
+                        col("accu_id"),
+                        col("time"),
+                        to_json(col("detail")).as("detail")
+                    );
+                } else {
+                    data = data.select(
+                        col("dim"),
+                        col("accu_id"),
+                        col("time"),
+                        col("detail")
+                    );
+                }
+            }
+        } else {
+            try {
+                // Only transform map types for CSV format
+                if (params.get("format").toLowerCase().equals("csv")) {
+                    data = transformMapTypeColumn(data);
+                }
+            } catch (Exception e) {
+                logger.error("Error transforming map type column", e);
+            }
+        }
+
+        String format = params.get("format").toLowerCase();
+        String outputPath = params.get("output_path") + "/" + keyspace + "/" + table;
         try {
-            data = transformMapTypeColumn(data);
+            if (format.equals("csv")) {
+                data.coalesce(1)  // Combine into a single file
+                    .write()
+                    .option("header", "true")
+                    .option("delimiter", ",")
+                    .option("quote", "\"")
+                    .option("escape", "\"")
+                    .option("nullValue", "")
+                    .mode("overwrite")
+                    .csv(outputPath);
+                logger.info("################## Export table success (CSV) " + keyspace + "." + table);
+            } else {
+                data.write()
+                    .mode("overwrite")
+                    .orc(outputPath);
+                logger.info("################## Export table success (ORC) " + keyspace + "." + table);
+            }
         } catch (Exception e) {
-            logger.error("Error transforming map type column", e);
+            logger.error("Error exporting table " + keyspace + "." + table, e);
+            failedTables.add(keyspace + "." + table);
         }
-
-        if (table.startsWith("velocity_")){
-            data = data.select("dim", "accu_id", "time", "detail");
-        }
-
-        data.write().option("header", "true")
-                .mode("overwrite")
-                .orc(params.get("output_path") + "/" + keyspace + "/" + table);
     }
 
     static Dataset<Row> transformMapTypeColumn(Dataset<Row> data) {
