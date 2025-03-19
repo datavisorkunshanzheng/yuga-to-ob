@@ -2,6 +2,7 @@
 import json
 import os
 import requests
+import subprocess
 import sys
 import time
 import argparse
@@ -9,7 +10,7 @@ import argparse
 # Default configuration
 DEFAULT_INFRA_SERVICE_ADDRESS = "https://dcluster-us-east-b-preprod.dv-api.com"
 POLL_INTERVAL = 10  # seconds
-MAX_RETRIES = 30
+MAX_RETRIES = 120
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Submit a Spark job to a cluster')
@@ -21,6 +22,8 @@ def parse_arguments():
                         help='Destroy the cluster after job completion (overrides config)')
     parser.add_argument('--no-destroy-cluster', action='store_true',
                         help='Do not destroy the cluster after job completion (overrides config)')
+    parser.add_argument('--local-mode', action='store_true',
+                        help='Run in local mode - print curl commands instead of executing them')
     
     return parser.parse_args()
 
@@ -47,7 +50,8 @@ def load_config(config_path):
         if 'jar_path' in config and not os.path.isabs(config['jar_path']):
             config['jar_path'] = os.path.normpath(os.path.join(config_dir, config['jar_path']))
             
-        if 'output_path' in config and not os.path.isabs(config['output_path']):
+        # Don't modify S3 paths that start with s3:// or s3a://
+        if 'output_path' in config and not (config['output_path'].startswith('s3://') or config['output_path'].startswith('s3a://')) and not os.path.isabs(config['output_path']):
             config['output_path'] = os.path.normpath(os.path.join(config_dir, config['output_path']))
             
         return config
@@ -114,43 +118,53 @@ def wait_for_cluster_ready(cluster_id, infra_service_address=None):
     sys.exit(1)
 
 def submit_spark_job(cluster_info, config):
-    """Submit the Spark job to the cluster using the Livy REST API."""
-    # Extract the master URL and construct the Livy endpoint
-    master_host = cluster_info.get('externalURl')
+    """Submit the Spark job to the cluster using the infra service API instead of direct connection."""
+    # Extract service address from cluster info
     service_address = cluster_info.get('serviceAddress')
     
-    # If externalURl is empty, use serviceAddress for the Livy endpoint
-    if not master_host and not service_address:
-        print("Error: Neither 'externalURl' nor 'serviceAddress' found in cluster_info. Available keys:")
-        print(json.dumps(cluster_info, indent=2))
+    if not service_address:
+        print("Error: 'serviceAddress' not found in cluster_info")
         sys.exit(1)
     
-    # Use serviceAddress directly if available, otherwise construct from master_host
-    if service_address:
-        livy_endpoint = f"{service_address}/batches"
-    else:
-        livy_endpoint = f"http://{master_host}:8998/batches"
+    # Prepare the batches endpoint for job submission
+    infra_endpoint = "http://172.27.34.184:31148/batches"
+    print(f"Using infra service endpoint: {infra_endpoint}")
     
     # Get spark configuration from config or use defaults
     spark_config = config.get('spark_config', {})
     driver_memory = spark_config.get('driver_memory', '4g')
-    executor_memory = spark_config.get('executor_memory', '4g')
+    executor_memory = spark_config.get('executor_memory', '7g')
     driver_cores = spark_config.get('driver_cores', 2)
     executor_cores = spark_config.get('executor_cores', 1)
+    
+    # Check if jar_path exists in config
+    if 'jar_path' not in config and 's3_jar_path' not in config:
+        print("Error: Neither 'jar_path' nor 's3_jar_path' found in config")
+        sys.exit(1)
+    
+    # Get the JAR file path
+    jar_file = config.get('s3_jar_path')
+    if not jar_file and 'jar_path' in config:
+        # Check if JAR exists locally
+        jar_path = config['jar_path']
+        if not os.path.exists(jar_path):
+            print(f"Error: JAR file not found at {jar_path}")
+            sys.exit(1)
+            
+        # Get S3 bucket from config
+        if 's3_bucket' not in config:
+            print("Error: 's3_bucket' is required in config when using local jar_path")
+            sys.exit(1)
+            
+        # Use the S3 path directly
+        s3_bucket = config['s3_bucket']
+        jar_file = f"s3://{s3_bucket}/{os.path.basename(jar_path)}"
     
     # Prepare the arguments for the dataExport application
     args = []
     
     # Add the required parameters
-    # Extract master host from serviceAddress if externalURl is not available
-    spark_master_host = master_host
-    if not spark_master_host and service_address:
-        # Extract hostname from service_address URL
-        from urllib.parse import urlparse
-        parsed_url = urlparse(service_address)
-        spark_master_host = parsed_url.netloc.split(':')[0]
-    
-    args.extend(["--spark_master", f"spark://{spark_master_host}:7077"])
+    args.extend(["--spark_master", config.get('spark_master', 'spark://spark-master:7077')])  # Added spark_master parameter
     args.extend(["--cassandra_host", config['cassandra_host']])
     args.extend(["--cassandra_port", config['cassandra_port']])
     args.extend(["--output_path", config['output_path']])
@@ -166,41 +180,16 @@ def submit_spark_job(cluster_info, config):
         args.extend(["--sql_extensions", config['sql_extensions']])
     
     # Prepare the Spark configuration
-    conf = {
-        "spark.master": f"spark://{spark_master_host}:7077",
-        "spark.submit.deployMode": "client",
-        "spark.default.parallelism": "20",
-        "spark.sql.shuffle.partitions": "20",
-        "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
-    }
+    conf = spark_config.get('additional_conf', {})
     
-    # Add additional spark configurations if provided
-    for key, value in spark_config.get('additional_conf', {}).items():
-        conf[key] = value
-    
-    # Check if jar_path exists in config
-    if 'jar_path' not in config and 's3_jar_path' not in config:
-        print("Error: Neither 'jar_path' nor 's3_jar_path' found in config")
-        sys.exit(1)
-        
-    # Prepare the request payload
-    jar_file = config.get('s3_jar_path')
-    if not jar_file and 'jar_path' in config:
-        # Get S3 bucket from config - require it to be present
-        if 's3_bucket' not in config:
-            print("Error: 's3_bucket' is required in config when using local jar_path")
-            sys.exit(1)
-            
-        s3_bucket = config['s3_bucket']
-        jar_file = f"s3a://{s3_bucket}/{os.path.basename(config['jar_path'])}"
-        
+    # Construct the Livy API payload format
     payload = {
         "file": jar_file,
         "className": "com.export.dataExport",
         "args": args,
         "driverMemory": driver_memory.upper(),
-        "driverCores": driver_cores,
         "executorMemory": executor_memory.upper(),
+        "driverCores": driver_cores,
         "executorCores": executor_cores,
         "conf": conf
     }
@@ -209,72 +198,76 @@ def submit_spark_job(cluster_info, config):
     print("Submitting job with payload:")
     print(json.dumps(payload, indent=2))
     
-    # Submit the job
+    # Submit the job to the infra service API
     try:
-        response = requests.post(livy_endpoint, json=payload)
-        response.raise_for_status()
+        headers = {'Content-Type': 'application/json;charset=UTF-8'}
+        response = requests.post(infra_endpoint, headers=headers, json=payload)
         
+        # Check response status
+        if response.status_code != 200 and response.status_code != 201:
+            print(f"Error submitting job: {response.status_code} - {response.text}")
+            sys.exit(1)
+        
+        # Parse the response to get job ID
         job_info = response.json()
         job_id = job_info.get('id')
         
         print(f"Spark job submitted successfully! Job ID: {job_id}")
         print(f"Job details: {json.dumps(job_info, indent=2)}")
         
-        # Monitor the job status
-        monitor_job(livy_endpoint, job_id)
-        
-        return job_id
+        # Return the job ID and the base endpoint (without "/batches") for status monitoring
+        base_endpoint = infra_endpoint.replace('/batches', '')
+        return job_id, base_endpoint
     except requests.exceptions.RequestException as e:
         print(f"Error submitting Spark job: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print(f"Response: {e.response.text}")
         sys.exit(1)
 
-def monitor_job(livy_endpoint, job_id):
-    """Monitor the status of a submitted Spark job."""
-    if not livy_endpoint:
-        print("Error: livy_endpoint is empty or None")
+def monitor_job(status_endpoint, job_id):
+    """Monitor the status of a submitted Spark job using the DCluster API."""
+    if not status_endpoint:
+        print("Error: status_endpoint is empty or None")
         return False
         
     if not job_id:
         print("Error: job_id is empty or None")
         return False
-        
-    # Construct the status endpoint by removing '/batches' if it's at the end and adding /{job_id}
-    if livy_endpoint.endswith('/batches'):
-        base_endpoint = livy_endpoint
-    else:
-        # If we don't have '/batches' at the end, we need to add it
-        base_endpoint = f"{livy_endpoint}/batches" if not '/batches' in livy_endpoint else livy_endpoint
-        
-    status_endpoint = f"{base_endpoint}/{job_id}"
-    
-    print(f"Monitoring job {job_id}...")
+            
+    print(f"Monitoring job {job_id} using status endpoint: {status_endpoint}")
     
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.get(status_endpoint)
             response.raise_for_status()
             
+            # According to the API doc, the state endpoint returns a simple state object
+            # {"id":4,"state":"success"}
             status_info = response.json()
-            state = status_info.get('state')
+            
+            # Extract state from the response
+            state = None
+            if isinstance(status_info, dict):
+                state = status_info.get('state')
             
             print(f"Job {job_id} status: {state}")
             
-            if state in ['success', 'dead', 'killed', 'failed']:
-                if state == 'success':
-                    print(f"Job {job_id} completed successfully!")
-                    return True
-                else:
-                    print(f"Job {job_id} ended with state: {state}")
-                    print(f"Job details: {json.dumps(status_info, indent=2)}")
-                    return False
+            # Check for terminal states
+            if state in ['success', 'SUCCESS', 'FINISHED', 'SUCCEEDED', 'complete', 'COMPLETE', 'completed', 'COMPLETED']:
+                print(f"Job {job_id} completed successfully!")
+                return True
+            elif state in ['dead', 'killed', 'failed', 'FAILED', 'KILLED', 'ERROR', 'error']:
+                print(f"Job {job_id} ended with state: {state}")
+                print(f"Job details: {json.dumps(status_info, indent=2)}")
+                return False
             
             # Job is still running, wait and check again
             time.sleep(POLL_INTERVAL)
             
         except requests.exceptions.RequestException as e:
             print(f"Error monitoring job: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
             time.sleep(POLL_INTERVAL)
     
     print(f"Timeout monitoring job {job_id} after {MAX_RETRIES} attempts.")
@@ -308,6 +301,104 @@ def destroy_cluster(cluster_name, infra_service_address=None):
             print(f"Response: {e.response.text}")
         return False
 
+def submit_job_local(cluster_info, config):
+    """Generate a curl command for submitting a Spark job to be run on a jumpserver."""
+    # Extract service address from cluster info
+    service_address = cluster_info.get('serviceAddress')
+    
+    if not service_address:
+        print("Error: 'serviceAddress' not found in cluster_info")
+        sys.exit(1)
+    
+    # Prepare the batches endpoint for job submission
+    infra_endpoint = f"{service_address}/batches"
+    print(f"Service endpoint for job submission: {infra_endpoint}")
+    
+    # Get spark configuration from config or use defaults
+    spark_config = config.get('spark_config', {})
+    driver_memory = spark_config.get('driver_memory', '4g')
+    executor_memory = spark_config.get('executor_memory', '7g')
+    driver_cores = spark_config.get('driver_cores', 2)
+    executor_cores = spark_config.get('executor_cores', 1)
+    
+    # Check if jar_path exists in config
+    if 'jar_path' not in config and 's3_jar_path' not in config:
+        print("Error: Neither 'jar_path' nor 's3_jar_path' found in config")
+        sys.exit(1)
+    
+    # Get the JAR file path
+    jar_file = config.get('s3_jar_path')
+    if not jar_file and 'jar_path' in config:
+        # Check if JAR exists locally
+        jar_path = config['jar_path']
+        if not os.path.exists(jar_path):
+            print(f"Error: JAR file not found at {jar_path}")
+            sys.exit(1)
+            
+        # Get S3 bucket from config
+        if 's3_bucket' not in config:
+            print("Error: 's3_bucket' is required in config when using local jar_path")
+            sys.exit(1)
+            
+        # Use the S3 path directly
+        s3_bucket = config['s3_bucket']
+        jar_file = f"s3://{s3_bucket}/{os.path.basename(jar_path)}"
+    
+    # Prepare the arguments for the dataExport application
+    args = []
+    
+    # Add the required parameters
+    args.extend(["--spark_master", config.get('spark_master', 'spark://spark-master:7077')])  # Added spark_master parameter
+    args.extend(["--cassandra_host", config['cassandra_host']])
+    args.extend(["--cassandra_port", config['cassandra_port']])
+    args.extend(["--output_path", config['output_path']])
+    
+    # Add optional parameters if provided
+    if 'table_list' in config and config['table_list']:
+        args.extend(["--table_list", config['table_list']])
+    
+    if 'jar_packages' in config:
+        args.extend(["--jar_packages", config['jar_packages']])
+    
+    if 'sql_extensions' in config:
+        args.extend(["--sql_extensions", config['sql_extensions']])
+    
+    # Prepare the Spark configuration
+    conf = spark_config.get('additional_conf', {})
+    
+    # Construct the Livy API payload format
+    payload = {
+        "file": jar_file,
+        "className": "com.export.dataExport",
+        "args": args,
+        "driverMemory": driver_memory.upper(),
+        "executorMemory": executor_memory.upper(),
+        "driverCores": driver_cores,
+        "executorCores": executor_cores,
+        "conf": conf
+    }
+    
+    # Create a JSON string for the payload and escape any double quotes for the curl command
+    json_payload = json.dumps(payload).replace('"', '\\"')
+    
+    # Construct the curl command as a single string without line breaks
+    curl_cmd = f"curl -X POST {infra_endpoint} --header \"Content-Type:application/json;charset=UTF-8\" --data \"{json_payload}\""
+    
+    print("\n\nCURL COMMAND FOR JOB SUBMISSION:")
+    print("====================================\n")
+    print(curl_cmd)
+    print("\n====================================\n")
+    
+    # Generate the monitoring command as well
+    print("After submitting the job, use the job ID from the response to monitor the job status:\n")
+    monitoring_cmd = (
+        "curl -X GET {}/batches/JOB_ID_HERE/state"
+    ).format(service_address)
+    print(monitoring_cmd)
+    
+    return None, None  # Return None for job_id and infra_endpoint to skip monitoring
+
+
 def main():
     args = parse_arguments()
     
@@ -326,9 +417,24 @@ def main():
     # Submit the Spark job
     job_success = False
     job_id = None
+    infra_endpoint = None
     try:
-        job_id = submit_spark_job(cluster_info, config)
-        job_success = job_id is not None
+        if args.local_mode:
+            # In local mode, just print the curl command and exit
+            job_id, infra_endpoint = submit_job_local(cluster_info, config)
+            print("\nLocal mode: Printed curl command for manual execution on jumpserver.")
+            print("No automatic job monitoring will be performed.")
+            return
+        else:
+            # Standard mode: submit the job and monitor it
+            job_id, infra_endpoint = submit_spark_job(cluster_info, config)
+            if job_id and infra_endpoint:
+                # Monitor the job status
+                # Use the state endpoint format from the API documentation
+                status_endpoint = f"{infra_endpoint}/batches/{job_id}/state"
+                job_success = monitor_job(status_endpoint, job_id)
+            else:
+                job_success = False
     except Exception as e:
         print(f"Error during job submission: {e}")
         job_success = False

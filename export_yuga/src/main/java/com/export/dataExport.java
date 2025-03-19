@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.apache.spark.sql.functions.hex;
 import static org.apache.spark.sql.functions.to_json;
@@ -194,15 +195,15 @@ public class dataExport {
                     .option("nullValue", "")
                     .mode("overwrite")
                     .csv(outputPath);
-                logger.info("################## Export table success (CSV) " + keyspace + "." + table);
+                logger.info("################## Export table success (CSV) " + keyspace + "." + table + " to " + outputPath);
             } else {
                 data.write()
                     .mode("overwrite")
                     .orc(outputPath);
-                logger.info("################## Export table success (ORC) " + keyspace + "." + table);
+                logger.info("################## Export table success (ORC) " + keyspace + "." + table + " to " + outputPath);
             }
         } catch (Exception e) {
-            logger.error("Error exporting table " + keyspace + "." + table, e);
+            logger.error("Error exporting table " + keyspace + "." + table + " to " + outputPath, e);
             failedTables.add(keyspace + "." + table);
         }
     }
@@ -244,6 +245,8 @@ public class dataExport {
         }
 
         for (String keyspace : tableNames.keySet()) {
+            logger.info("################## Exporting tables: "
+                    + String.join(", ", tableNames.values().stream().map(List::toString).collect(Collectors.toList())));
             for (String table : tableNames.get(keyspace)) {
                 try {
                     exportOneTableCassandra(spark, keyspace, table);
@@ -253,7 +256,7 @@ public class dataExport {
                         exportOneTableCassandra(spark, keyspace, table);
                     } catch (Exception e2) {
                         String failedTable = keyspace + "." + table;
-                        logger.error("################# Export table failed after one retry"
+                        logger.error("################# Export table failed after one retry: "
                                 + failedTable, e2);
                         failedTables.add(failedTable);
                     }
