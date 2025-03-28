@@ -28,7 +28,8 @@ cluster = {
     'created': '',
     'deleted': '',
     'type': '',
-    'launchNewNode': ''
+    'launchNewNode': '',
+    'onDemandMode': True, 
 }
 
 headers = {
@@ -43,13 +44,18 @@ cluster['masterMemory'] = 4
 cluster['workerCpu'] = 1
 cluster['workerMemory'] = 7
 cluster['launchNewNode'] = True
+cluster['onDemandMode'] = True
 
 
 def launch_spark_cluster():
     request_body = json.dumps(cluster)
 
+    print("Request body: " + request_body)
+
     response = requests.post(infra_service_address + '/cluster/v2/launch/spark/cluster',
                              headers=headers, data=request_body)
+
+    print("Response: " + str(response.json()))
 
     if isinstance(response.json(), dict):
         for key, value in response.json().items():

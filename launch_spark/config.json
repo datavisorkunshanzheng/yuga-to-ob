@@ -4,7 +4,7 @@
   "cassandra_host": "yb-tservers.dev-oneclick",
   "cassandra_port": "9042",
   "output_path": "s3a://datavisor-release-uswest2-awsuswest2dev/dev-oneclick/export_to_ob/",
-  "table_list": "dv.velocity_dantest",
+  "table_list": "dv.velocity_onefinance",
   "spark_master": "spark://spark-master:7077",
   "jar_packages": "com.datastax.spark:spark-cassandra-connector_2.12:3.5.1",
   "sql_extensions": "com.datastax.spark.connector.CassandraSparkExtensions",
